@@ -38,6 +38,13 @@ jobs:
           gh_token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
+## How to get MATTERMOST_WEBHOOK_URL
+
+<img width="378" height="385" alt="image" src="https://github.com/user-attachments/assets/2f667a6c-8b19-4c76-a713-2fae790d3d38" />
+<img width="1607" height="857" alt="image" src="https://github.com/user-attachments/assets/48649d01-d801-4dec-9ed4-d30a3876bfe5" />
+<img width="1311" height="268" alt="image" src="https://github.com/user-attachments/assets/331e6291-0a0a-476b-8373-b846e9ffd668" />
+
+
 ## Output Example
 
 If PRs were merged in the last 24h, the Mattermost message will look like:
