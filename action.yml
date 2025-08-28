@@ -1,5 +1,7 @@
 name: "Post merged PRs to Mattermost"
 description: "List merged PRs in the last N hours for the current repository and post to Mattermost"
+icon: send
+color: blue
 
 inputs:
   mattermost_webhook_url:
