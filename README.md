@@ -16,6 +16,7 @@ This GitHub Action collects all pull requests merged in the **last 24 hours** fo
 | ------------------------ | -------- | ---------------------------------------------------------------------------------- |
 | `mattermost_webhook_url` | Yes      | Incoming webhook URL for your Mattermost channel.                                  |
 | `gh_token`               | Yes      | GitHub token (usually `secrets.GITHUB_TOKEN`) to authenticate with the GitHub CLI. |
+| `hours`                  | No       | How many hours back to search for merged PRs. (default: 24)                         |
 
 ## Example Usage
 
