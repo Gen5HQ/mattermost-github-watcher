@@ -31,8 +31,7 @@ jobs:
   post-prs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: your-org/your-repo@v1
+      - uses: Gen5HQ/mattermost-github-watcher@[version]
         with:
           mattermost_webhook_url: ${{ secrets.MATTERMOST_WEBHOOK_URL }}
           gh_token: ${{ secrets.GITHUB_TOKEN }}
