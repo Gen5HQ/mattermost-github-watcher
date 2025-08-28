@@ -1,0 +1,36 @@
+name: "Post merged PRs to Mattermost (last 24h)"
+description: "List merged PRs in the last 24h for the current repository and post to Mattermost"
+inputs:
+  mattermost_webhook_url:
+    description: "Incoming webhook URL for Mattermost"
+    required: true
+  gh_token:
+    description: "GitHub token (usually secrets.GITHUB_TOKEN)"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Get merged PRs (last 24h)
+      id: pr_list
+      shell: bash
+      run: |
+        prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --search "merged:>=$(date -d '24 hours ago' -u +'%Y-%m-%dT%H:%M:%SZ')" --json number,title,url,author --jq '.[] | "- #\(.number) [\(.title)](\(.url)) by **\(.author.login)**"')
+        if [ -z "$prs" ]; then
+          echo "text=過去24時間でマージされたPRはありません" >> $GITHUB_OUTPUT
+        else
+          # 改行をMattermost用にエスケープ
+          prs_escaped=$(echo "$prs" | sed ':a;N;$!ba;s/\n/\\n/g')
+          text="✅過去24時間でマージされたPR一覧:\n$prs_escaped"
+          echo "text=$text" >> $GITHUB_OUTPUT
+        fi
+      env:
+        GH_TOKEN: ${{ inputs.gh_token }}
+
+    - name: Post PR list to Mattermost
+      shell: bash
+      run: |
+        payload="{\"text\":\"${{ steps.pr_list.outputs.text }}\"}"
+        curl -X POST -H 'Content-Type: application/json' -d "$payload" "$MATTERMOST_WEBHOOK_URL"
+      env:
+        MATTERMOST_WEBHOOK_URL: ${{ inputs.mattermost_webhook_url }}
