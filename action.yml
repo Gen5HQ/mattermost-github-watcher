@@ -1,5 +1,6 @@
-name: "Post merged PRs to Mattermost (last 24h)"
-description: "List merged PRs in the last 24h for the current repository and post to Mattermost"
+name: "Post merged PRs to Mattermost"
+description: "List merged PRs in the last N hours for the current repository and post to Mattermost"
+
 inputs:
   mattermost_webhook_url:
     description: "Incoming webhook URL for Mattermost"
@@ -7,21 +8,31 @@ inputs:
   gh_token:
     description: "GitHub token (usually secrets.GITHUB_TOKEN)"
     required: true
+  hours:
+    description: "How many hours back to search for merged PRs (default: 24)"
+    required: false
+    default: "24"
 
 runs:
   using: "composite"
   steps:
-    - name: Get merged PRs (last 24h)
+    - name: Get merged PRs (last N hours)
       id: pr_list
       shell: bash
       run: |
-        prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --search "merged:>=$(date -d '24 hours ago' -u +'%Y-%m-%dT%H:%M:%SZ')" --json number,title,url,author --jq '.[] | "- #\(.number) [\(.title)](\(.url)) by **\(.author.login)**"')
+        hours="${{ inputs.hours }}"
+        prs=$(gh pr list \
+          --repo "$GITHUB_REPOSITORY" \
+          --state merged \
+          --search "merged:>=$(date -d "${hours} hours ago" -u +'%Y-%m-%dT%H:%M:%SZ')" \
+          --json number,title,url,author \
+          --jq '.[] | "- #\(.number) [\(.title)](\(.url)) by **\(.author.login)**"')
+
         if [ -z "$prs" ]; then
-          echo "text=過去24時間でマージされたPRはありません" >> $GITHUB_OUTPUT
+          echo "text=過去${hours}時間でマージされたPRはありません" >> $GITHUB_OUTPUT
         else
-          # 改行をMattermost用にエスケープ
           prs_escaped=$(echo "$prs" | sed ':a;N;$!ba;s/\n/\\n/g')
-          text="✅過去24時間でマージされたPR一覧:\n$prs_escaped"
+          text="✅ 過去${hours}時間でマージされたPR一覧:\n$prs_escaped"
           echo "text=$text" >> $GITHUB_OUTPUT
         fi
       env:
