@@ -1,5 +1,5 @@
 name: "Post merged PRs to Mattermost"
-description: "List merged PRs in the last N hours for the current repository and post to Mattermost"
+description: "List merged PRs in the last N hours for the current repository and post to Mattermost (includes diff stats by default)"
 branding:
   icon: send
   color: blue
@@ -26,35 +26,51 @@ runs:
     - name: Get merged PRs (last N hours)
       id: pr_list
       shell: bash
-      run: |
-        hours="${{ inputs.hours }}"
-        prs=$(gh pr list \
-          --repo "$GITHUB_REPOSITORY" \
-          --state merged \
-          --search "merged:>=$(date -d "${hours} hours ago" -u +'%Y-%m-%dT%H:%M:%SZ')" \
-          --json number,title,url,author \
-          --jq '.[] | "- #\(.number) [\(.title)](\(.url)) by **\(.author.login)**"')
-
-        if [ -z "$prs" ]; then
-          echo "text=過去${hours}時間でマージされたPRはありません" >> $GITHUB_OUTPUT
-          echo "has_prs=false" >> $GITHUB_OUTPUT
-        else
-          prs_escaped=$(echo "$prs" | sed ':a;N;$!ba;s/\n/\\n/g')
-          text="✅ 過去${hours}時間でマージされたPR一覧:\n$prs_escaped"
-          echo "text=$text" >> $GITHUB_OUTPUT
-          echo "has_prs=true" >> $GITHUB_OUTPUT
-        fi
       env:
         GH_TOKEN: ${{ inputs.gh_token }}
+      run: |
+        set -euo pipefail
+
+        hours="${{ inputs.hours }}"
+        merged_since="$(date -d "${hours} hours ago" -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+        prs_json="$(gh pr list \
+          --repo "$GITHUB_REPOSITORY" \
+          --state merged \
+          --search "merged:>=$merged_since" \
+          --json number,title,url,author)"
+
+        if [ "$(echo "$prs_json" | jq 'length')" -eq 0 ]; then
+          echo "text=過去${hours}時間でマージされたPRはありません" >> "$GITHUB_OUTPUT"
+          echo "has_prs=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        lines=""
+        while IFS= read -r row; do
+          num="$(echo "$row" | jq -r .number)"
+          title="$(echo "$row" | jq -r .title)"
+          url="$(echo "$row" | jq -r .url)"
+          author="$(echo "$row" | jq -r .author.login)"
+          # ここで各PRの additions/deletions を取得（デフォルトで有効）
+          additions="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$num" --jq .additions)"
+          deletions="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$num" --jq .deletions)"
+          lines+="- #${num} [${title}](${url}) by **${author}** (+${additions} -${deletions})"$'\n'
+        done < <(echo "$prs_json" | jq -c '.[]')
+
+        prs_escaped="$(printf "%s" "$lines" | sed ':a;N;$!ba;s/\n/\\n/g')"
+        text="✅ 過去${hours}時間でマージされたPR一覧:\n${prs_escaped}"
+        echo "text=$text" >> "$GITHUB_OUTPUT"
+        echo "has_prs=true" >> "$GITHUB_OUTPUT"
 
     - name: Post PR list to Mattermost
-      # 投稿は以下の条件を満たすときだけ行う:
+      # 投稿は以下の条件で実行:
       # - skip_if_no_prs が 'false' のとき（常に投稿）
       # - または has_prs が 'true' のとき（PR がある場合のみ投稿）
       if: ${{ inputs.skip_if_no_prs != 'true' || steps.pr_list.outputs.has_prs == 'true' }}
       shell: bash
+      env:
+        MATTERMOST_WEBHOOK_URL: ${{ inputs.mattermost_webhook_url }}
       run: |
         payload="{\"text\":\"${{ steps.pr_list.outputs.text }}\"}"
         curl -X POST -H 'Content-Type: application/json' -d "$payload" "$MATTERMOST_WEBHOOK_URL"
-      env:
-        MATTERMOST_WEBHOOK_URL: ${{ inputs.mattermost_webhook_url }}
