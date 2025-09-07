@@ -15,6 +15,10 @@ inputs:
     description: "How many hours back to search for merged PRs (default: 24)"
     required: false
     default: "24"
+  skip_if_no_prs:
+    description: "If 'true', do not post to Mattermost when there are no merged PRs (default: false)"
+    required: false
+    default: "false"
 
 runs:
   using: "composite"
@@ -33,15 +37,21 @@ runs:
 
         if [ -z "$prs" ]; then
           echo "text=過去${hours}時間でマージされたPRはありません" >> $GITHUB_OUTPUT
+          echo "has_prs=false" >> $GITHUB_OUTPUT
         else
           prs_escaped=$(echo "$prs" | sed ':a;N;$!ba;s/\n/\\n/g')
           text="✅ 過去${hours}時間でマージされたPR一覧:\n$prs_escaped"
           echo "text=$text" >> $GITHUB_OUTPUT
+          echo "has_prs=true" >> $GITHUB_OUTPUT
         fi
       env:
         GH_TOKEN: ${{ inputs.gh_token }}
 
     - name: Post PR list to Mattermost
+      # 投稿は以下の条件を満たすときだけ行う:
+      # - skip_if_no_prs が 'false' のとき（常に投稿）
+      # - または has_prs が 'true' のとき（PR がある場合のみ投稿）
+      if: ${{ inputs.skip_if_no_prs != 'true' || steps.pr_list.outputs.has_prs == 'true' }}
       shell: bash
       run: |
         payload="{\"text\":\"${{ steps.pr_list.outputs.text }}\"}"
