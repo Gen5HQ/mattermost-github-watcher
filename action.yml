@@ -23,51 +23,80 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Sanity checks
+      shell: bash
+      run: |
+        set -euo pipefail
+        for c in bash gh jq curl date; do
+          command -v "$c" >/dev/null 2>&1 || { echo "::error::'$c' not found"; exit 1; }
+        done
+        # リポジトリ/トークンの存在チェック（未設定ならここで失敗）
+        : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+
     - name: Get merged PRs (last N hours)
       id: pr_list
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.gh_token }}
+        HOURS: ${{ inputs.hours }}
       run: |
         set -euo pipefail
 
-        hours="${{ inputs.hours }}"
-        merged_since="$(date -d "${hours} hours ago" -u +'%Y-%m-%dT%H:%M:%SZ')"
+        # merged_since（UTC）の算出: GNU date -> BSD date -> python3 の順にフォールバック
+        if merged_since="$(date -u -d "${HOURS} hours ago" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"; then
+          :
+        elif merged_since="$(date -u -v-"${HOURS}"H +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"; then
+          :
+        else
+          if command -v python3 >/dev/null 2>&1; then
+            merged_since="$(python3 - <<'PY'
+from datetime import datetime, timedelta, timezone
+import os
+h = int(os.environ.get("HOURS","24"))
+print((datetime.now(timezone.utc)-timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+)"
+          else
+            echo "::warning::Falling back to 24h as python3 is unavailable"
+            merged_since="$(date -u -d '24 hours ago' +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v-24H +'%Y-%m-%dT%H:%M:%SZ')"
+          fi
+        fi
 
-        # additions,deletions をまとめて取得（gh pr list の --json に含める）
+        # まとめて取得（差分件数込み、ソート・上限つき）
         prs_json="$(gh pr list \
-          --repo "$GITHUB_REPOSITORY" \
+          --repo "${GITHUB_REPOSITORY:?}" \
           --state merged \
           --search "merged:>=$merged_since" \
-          --json number,title,url,author,additions,deletions)"
+          --sort merged --order desc \
+          --limit 100 \
+          --json number,title,url,author,additions,deletions \
+        )"
 
-        if [ "$(echo "$prs_json" | jq 'length')" -eq 0 ]; then
-          echo "text<<EOF" >> "$GITHUB_OUTPUT"
-          echo "過去${hours}時間でマージされたPRはありません" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-          echo "has_prs=false" >> "$GITHUB_OUTPUT"
+        count="$(printf '%s' "$prs_json" | jq 'length')"
+        if [ "$count" -eq 0 ]; then
+          {
+            echo "text<<EOF"
+            echo "過去${HOURS}時間でマージされたPRはありません"
+            echo "EOF"
+            echo "has_prs=false"
+          } >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
-        lines=""
-        while IFS= read -r row; do
-          num="$(echo "$row" | jq -r '.number')"
-          title="$(echo "$row" | jq -r '.title')"
-          url="$(echo "$row" | jq -r '.url')"
-          author="$(echo "$row" | jq -r '.author.login')"
-          additions="$(echo "$row" | jq -r '.additions // 0')"
-          deletions="$(echo "$row" | jq -r '.deletions // 0')"
-          lines+="- #${num} [${title}](${url}) by **${author}** (+${additions} -${deletions})"$'\n'
-        done < <(echo "$prs_json" | jq -c '.[]')
+        # Markdown本文（1行/PR）を jq で生成
+        body_lines="$(printf '%s' "$prs_json" \
+          | jq -r '.[] | "- #\(.number) [\(.title)](\(.url)) by **\((.author.login // "unknown"))** (+\((.additions // 0)) -\((.deletions // 0)))"' \
+        )"
 
-        summary="✅ 過去${hours}時間でマージされたPR一覧:"
-        lines="${lines%$'\n'}"
-        text="${summary}\n${lines}"
+        header="✅ 過去${HOURS}時間でマージされたPR一覧:"
+        text="${header}\n${body_lines}"
 
-        echo "text<<EOF" >> "$GITHUB_OUTPUT"
-        printf '%s\n' "$text" >> "$GITHUB_OUTPUT"
-        echo "EOF" >> "$GITHUB_OUTPUT"
-        echo "has_prs=true" >> "$GITHUB_OUTPUT"
+        {
+          echo "text<<EOF"
+          printf '%s\n' "$text"
+          echo "EOF"
+          echo "has_prs=true"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Post PR list to Mattermost
       if: ${{ inputs.skip_if_no_prs != 'true' || steps.pr_list.outputs.has_prs == 'true' }}
@@ -76,6 +105,11 @@ runs:
         MATTERMOST_WEBHOOK_URL: ${{ inputs.mattermost_webhook_url }}
       run: |
         set -euo pipefail
+        # URL のざっくり妥当性チェック
+        case "$MATTERMOST_WEBHOOK_URL" in
+          http://*|https://*) ;;
+          *) echo "::error::Invalid MATTERMOST_WEBHOOK_URL"; exit 1 ;;
+        esac
 
         text="${{ steps.pr_list.outputs.text }}"
         payload="$(jq -n --arg text "$text" '{text: $text}')"
