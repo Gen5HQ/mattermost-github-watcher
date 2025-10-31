@@ -1,5 +1,3 @@
-
-あなた:
 name: "Post merged PRs to Mattermost"
 description: "List merged PRs in the last N hours for the current repository and post to Mattermost (includes diff stats by default)"
 branding:
