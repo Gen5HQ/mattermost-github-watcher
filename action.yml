@@ -1,3 +1,30 @@
+
+あなた:
+name: "Post merged PRs to Mattermost"
+description: "List merged PRs in the last N hours for the current repository and post to Mattermost (includes diff stats by default)"
+branding:
+  icon: send
+  color: blue
+
+inputs:
+  mattermost_webhook_url:
+    description: "Incoming webhook URL for Mattermost"
+    required: true
+  gh_token:
+    description: "GitHub token (usually secrets.GITHUB_TOKEN)"
+    required: true
+  hours:
+    description: "How many hours back to search for merged PRs (default: 24)"
+    required: false
+    default: "24"
+  skip_if_no_prs:
+    description: "If 'true', do not post to Mattermost when there are no merged PRs (default: false)"
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
     - name: Get merged PRs (last N hours)
       id: pr_list
       shell: bash
@@ -60,3 +87,16 @@
         # JSONのエスケープは jq に任せる
         jq -n --arg text "${{ steps.pr_list.outputs.text }}" '{text:$text}' \
           | curl -sS -X POST -H 'Content-Type: application/json' -d @- "$MATTERMOST_WEBHOOK_URL"
+
+
+    - name: Post PR list to Mattermost
+      # 投稿は以下の条件で実行:
+      # - skip_if_no_prs が 'false' のとき（常に投稿）
+      # - または has_prs が 'true' のとき（PR がある場合のみ投稿）
+      if: ${{ inputs.skip_if_no_prs != 'true' || steps.pr_list.outputs.has_prs == 'true' }}
+      shell: bash
+      env:
+        MATTERMOST_WEBHOOK_URL: ${{ inputs.mattermost_webhook_url }}
+      run: |
+        payload="{\"text\":\"${{ steps.pr_list.outputs.text }}\"}"
+        curl -X POST -H 'Content-Type: application/json' -d "$payload" "$MATTERMOST_WEBHOOK_URL"
