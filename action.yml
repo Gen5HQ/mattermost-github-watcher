@@ -46,46 +46,22 @@ runs:
           exit 0
         fi
 
-        # リンクテキスト用のエスケープ関数（\, [, ]）
-        md_escape_link_text() {
-          sed -e 's/\\/\\\\/g' -e 's/\[/\\[/g' -e 's/\]/\\]/g'
-        }
-
         lines=""
         while IFS= read -r row; do
           num="$(echo "$row" | jq -r .number)"
-          raw_title="$(echo "$row" | jq -r .title)"
-          # タイトルの改行はスペースに潰す（Mattermostのレイアウト崩れ防止）
-          raw_title_one="$(printf '%s' "$raw_title" | tr '\r\n' '  ')"
-          title="$(printf '%s' "$raw_title_one" | md_escape_link_text)"
+          title="$(echo "$row" | jq -r .title)"
           url="$(echo "$row" | jq -r .url)"
           author="$(echo "$row" | jq -r .author.login)"
+          # ここで各PRの additions/deletions を取得（デフォルトで有効）
           additions="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$num" --jq .additions)"
           deletions="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$num" --jq .deletions)"
           lines+="- #${num} [${title}](${url}) by **${author}** (+${additions} -${deletions})"$'\n'
         done < <(echo "$prs_json" | jq -c '.[]')
 
-        text="✅ 過去${hours}時間でマージされたPR一覧:\n${lines}"
-        # そのまま改行を含む文字列を GITHUB_OUTPUT に渡す
-        # （改行を \n に置換しない）
-        {
-          echo "text<<'__EOT__'"
-          printf "%s" "$text"
-          echo
-          echo "__EOT__"
-        } >> "$GITHUB_OUTPUT"
+        prs_escaped="$(printf "%s" "$lines" | sed ':a;N;$!ba;s/\n/\\n/g')"
+        text="✅ 過去${hours}時間でマージされたPR一覧:\n${prs_escaped}"
+        echo "text=$text" >> "$GITHUB_OUTPUT"
         echo "has_prs=true" >> "$GITHUB_OUTPUT"
-
-    - name: Post PR list to Mattermost
-      if: ${{ inputs.skip_if_no_prs != 'true' || steps.pr_list.outputs.has_prs == 'true' }}
-      shell: bash
-      env:
-        MATTERMOST_WEBHOOK_URL: ${{ inputs.mattermost_webhook_url }}
-      run: |
-        # JSONのエスケープは jq に任せる
-        jq -n --arg text "${{ steps.pr_list.outputs.text }}" '{text:$text}' \
-          | curl -sS -X POST -H 'Content-Type: application/json' -d @- "$MATTERMOST_WEBHOOK_URL"
-
 
     - name: Post PR list to Mattermost
       # 投稿は以下の条件で実行:
