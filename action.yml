@@ -42,7 +42,6 @@ runs:
           --json number,title,url,author,additions,deletions)"
 
         if [ "$(echo "$prs_json" | jq 'length')" -eq 0 ]; then
-          # multiline output を安全に扱うため heredoc 形式で出力
           echo "text<<EOF" >> "$GITHUB_OUTPUT"
           echo "過去${hours}時間でマージされたPRはありません" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -52,29 +51,25 @@ runs:
 
         lines=""
         while IFS= read -r row; do
-          num="$(echo "$row" | jq -r .number)"
-          title="$(echo "$row" | jq -r .title)"
-          url="$(echo "$row" | jq -r .url)"
-          author="$(echo "$row" | jq -r .author.login)"
-          additions="$(echo "$row" | jq -r .additions // 0)"
-          deletions="$(echo "$row" | jq -r .deletions // 0)"
+          num="$(echo "$row" | jq -r '.number')"
+          title="$(echo "$row" | jq -r '.title')"
+          url="$(echo "$row" | jq -r '.url')"
+          author="$(echo "$row" | jq -r '.author.login')"
+          additions="$(echo "$row" | jq -r '.additions // 0')"
+          deletions="$(echo "$row" | jq -r '.deletions // 0')"
           lines+="- #${num} [${title}](${url}) by **${author}** (+${additions} -${deletions})"$'\n'
         done < <(echo "$prs_json" | jq -c '.[]')
 
-        # 末尾の改行を取りつつメッセージ本体を作る
         summary="✅ 過去${hours}時間でマージされたPR一覧:"
-        # lines の末尾改行を取り除く
         lines="${lines%$'\n'}"
         text="${summary}\n${lines}"
 
-        # GITHUB_OUTPUT に multiline で安全に書き込む
         echo "text<<EOF" >> "$GITHUB_OUTPUT"
         printf '%s\n' "$text" >> "$GITHUB_OUTPUT"
         echo "EOF" >> "$GITHUB_OUTPUT"
         echo "has_prs=true" >> "$GITHUB_OUTPUT"
 
     - name: Post PR list to Mattermost
-      # 投稿は skip_if_no_prs が 'false' のとき（常に投稿）または has_prs が 'true' のときのみ
       if: ${{ inputs.skip_if_no_prs != 'true' || steps.pr_list.outputs.has_prs == 'true' }}
       shell: bash
       env:
@@ -82,11 +77,6 @@ runs:
       run: |
         set -euo pipefail
 
-        # steps.pr_list.outputs.text は multiline のまま受け取れる
         text="${{ steps.pr_list.outputs.text }}"
-
-        # jq による安全な JSON 組み立て（改行・クォートを正しくエスケープ）
         payload="$(jq -n --arg text "$text" '{text: $text}')"
-
-        # curl は失敗時にエラーにする
         curl -fS -X POST -H 'Content-Type: application/json' -d "$payload" "$MATTERMOST_WEBHOOK_URL"
