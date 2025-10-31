@@ -34,14 +34,18 @@ runs:
         hours="${{ inputs.hours }}"
         merged_since="$(date -d "${hours} hours ago" -u +'%Y-%m-%dT%H:%M:%SZ')"
 
+        # additions,deletions をまとめて取得（gh pr list の --json に含める）
         prs_json="$(gh pr list \
           --repo "$GITHUB_REPOSITORY" \
           --state merged \
           --search "merged:>=$merged_since" \
-          --json number,title,url,author)"
+          --json number,title,url,author,additions,deletions)"
 
         if [ "$(echo "$prs_json" | jq 'length')" -eq 0 ]; then
-          echo "text=過去${hours}時間でマージされたPRはありません" >> "$GITHUB_OUTPUT"
+          # multiline output を安全に扱うため heredoc 形式で出力
+          echo "text<<EOF" >> "$GITHUB_OUTPUT"
+          echo "過去${hours}時間でマージされたPRはありません" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
           echo "has_prs=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi
@@ -52,25 +56,37 @@ runs:
           title="$(echo "$row" | jq -r .title)"
           url="$(echo "$row" | jq -r .url)"
           author="$(echo "$row" | jq -r .author.login)"
-          # ここで各PRの additions/deletions を取得（デフォルトで有効）
-          additions="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$num" --jq .additions)"
-          deletions="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$num" --jq .deletions)"
+          additions="$(echo "$row" | jq -r .additions // 0)"
+          deletions="$(echo "$row" | jq -r .deletions // 0)"
           lines+="- #${num} [${title}](${url}) by **${author}** (+${additions} -${deletions})"$'\n'
         done < <(echo "$prs_json" | jq -c '.[]')
 
-        prs_escaped="$(printf "%s" "$lines" | sed ':a;N;$!ba;s/\n/\\n/g')"
-        text="✅ 過去${hours}時間でマージされたPR一覧:\n${prs_escaped}"
-        echo "text=$text" >> "$GITHUB_OUTPUT"
+        # 末尾の改行を取りつつメッセージ本体を作る
+        summary="✅ 過去${hours}時間でマージされたPR一覧:"
+        # lines の末尾改行を取り除く
+        lines="${lines%$'\n'}"
+        text="${summary}\n${lines}"
+
+        # GITHUB_OUTPUT に multiline で安全に書き込む
+        echo "text<<EOF" >> "$GITHUB_OUTPUT"
+        printf '%s\n' "$text" >> "$GITHUB_OUTPUT"
+        echo "EOF" >> "$GITHUB_OUTPUT"
         echo "has_prs=true" >> "$GITHUB_OUTPUT"
 
     - name: Post PR list to Mattermost
-      # 投稿は以下の条件で実行:
-      # - skip_if_no_prs が 'false' のとき（常に投稿）
-      # - または has_prs が 'true' のとき（PR がある場合のみ投稿）
+      # 投稿は skip_if_no_prs が 'false' のとき（常に投稿）または has_prs が 'true' のときのみ
       if: ${{ inputs.skip_if_no_prs != 'true' || steps.pr_list.outputs.has_prs == 'true' }}
       shell: bash
       env:
         MATTERMOST_WEBHOOK_URL: ${{ inputs.mattermost_webhook_url }}
       run: |
-        payload="{\"text\":\"${{ steps.pr_list.outputs.text }}\"}"
-        curl -X POST -H 'Content-Type: application/json' -d "$payload" "$MATTERMOST_WEBHOOK_URL"
+        set -euo pipefail
+
+        # steps.pr_list.outputs.text は multiline のまま受け取れる
+        text="${{ steps.pr_list.outputs.text }}"
+
+        # jq による安全な JSON 組み立て（改行・クォートを正しくエスケープ）
+        payload="$(jq -n --arg text "$text" '{text: $text}')"
+
+        # curl は失敗時にエラーにする
+        curl -fS -X POST -H 'Content-Type: application/json' -d "$payload" "$MATTERMOST_WEBHOOK_URL"
