@@ -1,102 +1,55 @@
-name: "Post merged PRs to Mattermost"
-description: "List merged PRs in the last N hours for the current repository and post to Mattermost (includes diff stats by default)"
-branding:
-  icon: send
-  color: blue
-
-inputs:
-  mattermost_webhook_url:
-    description: "Incoming webhook URL for Mattermost"
-    required: true
-  gh_token:
-    description: "GitHub token (usually secrets.GITHUB_TOKEN)"
-    required: true
-  hours:
-    description: "How many hours back to search for merged PRs (default: 24)"
-    required: false
-    default: "24"
-  skip_if_no_prs:
-    description: "If 'true', do not post to Mattermost when there are no merged PRs (default: false)"
-    required: false
-    default: "false"
-
-runs:
-  using: "composite"
-  steps:
-    - name: Sanity checks
-      shell: bash
-      run: |
-        set -euo pipefail
-        for c in bash gh jq curl date; do
-          command -v "$c" >/dev/null 2>&1 || { echo "::error::'$c' not found"; exit 1; }
-        done
-        # リポジトリ/トークンの存在チェック（未設定ならここで失敗）
-        : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
-
     - name: Get merged PRs (last N hours)
       id: pr_list
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.gh_token }}
-        HOURS: ${{ inputs.hours }}
       run: |
         set -euo pipefail
 
-        # merged_since（UTC）の算出: GNU date -> BSD date -> python3 の順にフォールバック
-        if merged_since="$(date -u -d "${HOURS} hours ago" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"; then
-          :
-        elif merged_since="$(date -u -v-"${HOURS}"H +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"; then
-          :
-        else
-          if command -v python3 >/dev/null 2>&1; then
-            merged_since="$(python3 - <<'PY'
-from datetime import datetime, timedelta, timezone
-import os
-h = int(os.environ.get("HOURS","24"))
-print((datetime.now(timezone.utc)-timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ"))
-PY
-)"
-          else
-            echo "::warning::Falling back to 24h as python3 is unavailable"
-            merged_since="$(date -u -d '24 hours ago' +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v-24H +'%Y-%m-%dT%H:%M:%SZ')"
-          fi
-        fi
+        hours="${{ inputs.hours }}"
+        merged_since="$(date -d "${hours} hours ago" -u +'%Y-%m-%dT%H:%M:%SZ')"
 
-        # まとめて取得（差分件数込み、ソート・上限つき）
         prs_json="$(gh pr list \
-          --repo "${GITHUB_REPOSITORY:?}" \
+          --repo "$GITHUB_REPOSITORY" \
           --state merged \
           --search "merged:>=$merged_since" \
-          --sort merged --order desc \
-          --limit 100 \
-          --json number,title,url,author,additions,deletions \
-        )"
+          --json number,title,url,author)"
 
-        count="$(printf '%s' "$prs_json" | jq 'length')"
-        if [ "$count" -eq 0 ]; then
-          {
-            echo "text<<EOF"
-            echo "過去${HOURS}時間でマージされたPRはありません"
-            echo "EOF"
-            echo "has_prs=false"
-          } >> "$GITHUB_OUTPUT"
+        if [ "$(echo "$prs_json" | jq 'length')" -eq 0 ]; then
+          echo "text=過去${hours}時間でマージされたPRはありません" >> "$GITHUB_OUTPUT"
+          echo "has_prs=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
-        # Markdown本文（1行/PR）を jq で生成
-        body_lines="$(printf '%s' "$prs_json" \
-          | jq -r '.[] | "- #\(.number) [\(.title)](\(.url)) by **\((.author.login // "unknown"))** (+\((.additions // 0)) -\((.deletions // 0)))"' \
-        )"
+        # リンクテキスト用のエスケープ関数（\, [, ]）
+        md_escape_link_text() {
+          sed -e 's/\\/\\\\/g' -e 's/\[/\\[/g' -e 's/\]/\\]/g'
+        }
 
-        header="✅ 過去${HOURS}時間でマージされたPR一覧:"
-        text="${header}\n${body_lines}"
+        lines=""
+        while IFS= read -r row; do
+          num="$(echo "$row" | jq -r .number)"
+          raw_title="$(echo "$row" | jq -r .title)"
+          # タイトルの改行はスペースに潰す（Mattermostのレイアウト崩れ防止）
+          raw_title_one="$(printf '%s' "$raw_title" | tr '\r\n' '  ')"
+          title="$(printf '%s' "$raw_title_one" | md_escape_link_text)"
+          url="$(echo "$row" | jq -r .url)"
+          author="$(echo "$row" | jq -r .author.login)"
+          additions="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$num" --jq .additions)"
+          deletions="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$num" --jq .deletions)"
+          lines+="- #${num} [${title}](${url}) by **${author}** (+${additions} -${deletions})"$'\n'
+        done < <(echo "$prs_json" | jq -c '.[]')
 
+        text="✅ 過去${hours}時間でマージされたPR一覧:\n${lines}"
+        # そのまま改行を含む文字列を GITHUB_OUTPUT に渡す
+        # （改行を \n に置換しない）
         {
-          echo "text<<EOF"
-          printf '%s\n' "$text"
-          echo "EOF"
-          echo "has_prs=true"
+          echo "text<<'__EOT__'"
+          printf "%s" "$text"
+          echo
+          echo "__EOT__"
         } >> "$GITHUB_OUTPUT"
+        echo "has_prs=true" >> "$GITHUB_OUTPUT"
 
     - name: Post PR list to Mattermost
       if: ${{ inputs.skip_if_no_prs != 'true' || steps.pr_list.outputs.has_prs == 'true' }}
@@ -104,13 +57,6 @@ PY
       env:
         MATTERMOST_WEBHOOK_URL: ${{ inputs.mattermost_webhook_url }}
       run: |
-        set -euo pipefail
-        # URL のざっくり妥当性チェック
-        case "$MATTERMOST_WEBHOOK_URL" in
-          http://*|https://*) ;;
-          *) echo "::error::Invalid MATTERMOST_WEBHOOK_URL"; exit 1 ;;
-        esac
-
-        text="${{ steps.pr_list.outputs.text }}"
-        payload="$(jq -n --arg text "$text" '{text: $text}')"
-        curl -fS -X POST -H 'Content-Type: application/json' -d "$payload" "$MATTERMOST_WEBHOOK_URL"
+        # JSONのエスケープは jq に任せる
+        jq -n --arg text "${{ steps.pr_list.outputs.text }}" '{text:$text}' \
+          | curl -sS -X POST -H 'Content-Type: application/json' -d @- "$MATTERMOST_WEBHOOK_URL"
