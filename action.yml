@@ -49,7 +49,7 @@ runs:
         lines=""
         while IFS= read -r row; do
           num="$(echo "$row" | jq -r .number)"
-          title="$(echo "$row" | jq -r .title | sed 's/"/\\"/g')"
+          title="$(echo "$row" | jq -r .title)"
           url="$(echo "$row" | jq -r .url)"
           author="$(echo "$row" | jq -r .author.login)"
           # ここで各PRの additions/deletions を取得（デフォルトで有効）
@@ -72,6 +72,7 @@ runs:
       env:
         MATTERMOST_WEBHOOK_URL: ${{ inputs.mattermost_webhook_url }}
       run: |
-        payload="{\"text\":\"${{ steps.pr_list.outputs.text }}\"}"
+        escaped=$(echo "${{ steps.pr_list.outputs.text }}" | jq -Rs .)
+        payload="{\"text\":${escaped}}"
         echo $payload
         curl -X POST -H 'Content-Type: application/json' -d "$payload" "$MATTERMOST_WEBHOOK_URL"
