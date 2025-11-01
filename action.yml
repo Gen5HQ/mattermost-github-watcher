@@ -72,8 +72,8 @@ runs:
       env:
         MATTERMOST_WEBHOOK_URL: ${{ inputs.mattermost_webhook_url }}
       run: |
-        escaped="$(echo "${{ steps.pr_list.outputs.text }}" | sed 's/"/\\"/g')"
+        escaped="$(echo "${{ steps.pr_list.outputs.text }}" | sed 's/"/\\\\"/g')"
         echo $escaped
-        payload="{\"text\":${escaped}}"
+        payload="{\"text\":\"${escaped}\"}"
         echo $payload
         curl -X POST -H 'Content-Type: application/json' -d "$payload" "$MATTERMOST_WEBHOOK_URL"
