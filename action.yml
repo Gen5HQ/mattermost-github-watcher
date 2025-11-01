@@ -49,7 +49,7 @@ runs:
         lines=""
         while IFS= read -r row; do
           num="$(echo "$row" | jq -r .number)"
-          title="$(echo "$row" | jq -r .title)"
+          title="$(echo "$row" | jq -r .title | sed 's/"/\\"/g')"
           url="$(echo "$row" | jq -r .url)"
           author="$(echo "$row" | jq -r .author.login)"
           # ここで各PRの additions/deletions を取得（デフォルトで有効）
