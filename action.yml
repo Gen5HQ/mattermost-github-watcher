@@ -73,4 +73,5 @@ runs:
         MATTERMOST_WEBHOOK_URL: ${{ inputs.mattermost_webhook_url }}
       run: |
         payload="{\"text\":\"${{ steps.pr_list.outputs.text }}\"}"
+        echo $payload
         curl -X POST -H 'Content-Type: application/json' -d "$payload" "$MATTERMOST_WEBHOOK_URL"
